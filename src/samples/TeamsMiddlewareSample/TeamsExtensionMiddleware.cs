@@ -23,12 +23,12 @@ namespace TeamsMiddlewareSample;
 /// takes <c>IMiddleware[]</c> (and .NET DI does not auto-resolve array types),
 /// you must also register <c>IMiddleware[]</c> explicitly — see <c>Program.cs</c>.
 /// </remarks>
-public class TeamsRouterMiddleware : IMiddleware
+public class TeamsExtensionMiddleware : IMiddleware
 {
     private readonly MyTeamsBot _teamsBot;
-    private readonly ILogger<TeamsRouterMiddleware> _logger;
+    private readonly ILogger<TeamsExtensionMiddleware> _logger;
 
-    public TeamsRouterMiddleware(MyTeamsBot teamsBot, ILogger<TeamsRouterMiddleware> logger)
+    public TeamsExtensionMiddleware(MyTeamsBot teamsBot, ILogger<TeamsExtensionMiddleware> logger)
     {
         _teamsBot = teamsBot ?? throw new ArgumentNullException(nameof(teamsBot));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
@@ -38,7 +38,7 @@ public class TeamsRouterMiddleware : IMiddleware
     {
         if (turnContext.Activity.ChannelId == Channels.Msteams)
         {
-            _logger.LogDebug("TeamsRouterMiddleware: routing msteams activity {ActivityId} to Teams SDK", turnContext.Activity.Id);
+            _logger.LogDebug("TeamsExtensionMiddleware: routing msteams activity {ActivityId} to Teams SDK", turnContext.Activity.Id);
 
             // Bridge: serialize the Agent SDK IActivity to JSON, then deserialize
             // into the Teams SDK activity model.  Both SDKs implement the same

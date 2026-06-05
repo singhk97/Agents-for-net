@@ -25,7 +25,7 @@ builder.Services.AddTeamsSdkWithAgentAuth<MyTeamsBot>();
 // CloudAdapter's constructor takes an optional IMiddleware[] parameter.
 // .NET DI does not auto-resolve array types, so we register the array
 // explicitly after all individual IMiddleware registrations.
-builder.Services.AddSingleton<IMiddleware, TeamsRouterMiddleware>();
+builder.Services.AddSingleton<IMiddleware, TeamsExtensionMiddleware>();
 builder.Services.AddSingleton<IMiddleware[]>(sp =>
     sp.GetServices<IMiddleware>().ToArray());
 

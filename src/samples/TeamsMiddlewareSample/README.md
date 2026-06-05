@@ -13,7 +13,7 @@ Both SDKs receive traffic through the same `/api/messages` endpoint. An Agent SD
                          └──────────┬───────────┘
                                     │
                          ┌──────────▼───────────┐
-                         │ TeamsRouterMiddleware │
+                         │TeamsExtensionMiddleware│
                          │ (IMiddleware)         │
                          └──────────┬───────────┘
                                     │
@@ -44,7 +44,7 @@ Both SDKs receive traffic through the same `/api/messages` endpoint. An Agent SD
 
 1. **Inbound**: The Bot Framework Service (or Teams) sends an activity to `POST /api/messages`. The Agent SDK's `CloudAdapter` authenticates the JWT token using the `TokenValidation` config, then runs the middleware pipeline.
 
-2. **Routing**: `TeamsRouterMiddleware` checks `channelId`. If it is `msteams`, the activity is serialized to JSON and deserialized into the Teams SDK's `CoreActivity` model (both SDKs implement the same Activity Protocol wire format, so the conversion is lossless). The middleware then invokes `MyTeamsBot.OnActivity` and short-circuits the pipeline. For all other channels, `next()` is called and the activity reaches `MyAgent`.
+2. **Routing**: `TeamsExtensionMiddleware` checks `channelId`. If it is `msteams`, the activity is serialized to JSON and deserialized into the Teams SDK's `CoreActivity` model (both SDKs implement the same Activity Protocol wire format, so the conversion is lossless). The middleware then invokes `MyTeamsBot.OnActivity` and short-circuits the pipeline. For all other channels, `next()` is called and the activity reaches `MyAgent`.
 
 3. **Outbound**: When the Teams SDK's `ConversationClient` makes outbound HTTP calls (e.g., sending a reply), the `AgentSdkAuthHandler` intercepts the request, acquires a Bearer token from the Agent SDK's `IConnections`, and sets the `Authorization` header. This means a single `Connections` / `ConnectionsMap` config drives auth for both SDKs.
 
@@ -55,39 +55,37 @@ Both SDKs receive traffic through the same `/api/messages` endpoint. An Agent SD
 | `Program.cs` | DI registration and app startup. Registers both SDKs and the routing middleware. |
 | `TeamsSdkExtensions.cs` | `AddTeamsSdkWithAgentAuth<T>()` extension method that registers the Teams SDK service chain (`ConversationClient`, `UserTokenClient`, `ApiClient`, `T`) using a named `HttpClient` with `AgentSdkAuthHandler`. |
 | `AgentSdkAuthHandler.cs` | `DelegatingHandler` that bridges Agent SDK auth (`IConnections` / `IAccessTokenProvider`) into the Teams SDK's outbound HTTP pipeline. |
-| `TeamsRouterMiddleware.cs` | Agent SDK `IMiddleware` that inspects `channelId` and routes `msteams` traffic to the Teams SDK. |
+| `TeamsExtensionMiddleware.cs` | Agent SDK `IMiddleware` that inspects `channelId` and routes `msteams` traffic to the Teams Extension. |
 | `MyTeamsBot.cs` | Teams SDK bot (`TeamsBotApplication` subclass) with echo and welcome handlers. |
 | `MyAgent.cs` | Agent SDK bot (`AgentApplication` subclass) with echo and welcome handlers. |
 
 ## What comes from where
 
-The Teams SDK plugs into the Agent SDK's hosting and auth infrastructure while keeping its own application-layer types.
+The Teams Extension plugs into the Agent SDK's hosting and auth infrastructure while keeping its own application-layer types.
 
-### Teams SDK reuses from Agent SDK
+### Teams Extension reuses from Agent SDK
 
-| Capability | Agent SDK component | How the Teams SDK uses it |
+| Capability | Agent SDK component | How the Teams Extension uses it |
 |---|---|---|
-| Inbound token validation | `AddAgentAspNetAuthentication` / JWT Bearer middleware | CloudAdapter validates the Bot Framework JWT on every incoming request before the activity reaches the Teams SDK via middleware. |
+| Inbound token validation | `AddAgentAspNetAuthentication` / JWT Bearer middleware | CloudAdapter validates the Bot Framework JWT on every incoming request before the activity reaches the Teams Extension via middleware. |
 | Credential configuration | `Connections` + `ConnectionsMap` in `appsettings.json` | Single source of truth for ClientId, ClientSecret, and Scopes — no separate `AzureAd` section needed. |
-| Outbound authentication | `IConnections` / `IAccessTokenProvider` | `AgentSdkAuthHandler` calls `GetTokenProvider()` then `GetAccessTokenAsync()` to add Bearer tokens to the Teams SDK's outbound HTTP calls. |
-| Middleware pipeline | `CloudAdapter` + `IMiddleware` | `TeamsRouterMiddleware` is an Agent SDK `IMiddleware` that intercepts activities before they reach `MyAgent`. |
+| Outbound authentication | `IConnections` / `IAccessTokenProvider` | `AgentSdkAuthHandler` calls `GetTokenProvider()` then `GetAccessTokenAsync()` to add Bearer tokens to the Teams Extension's outbound HTTP calls. |
+| Middleware pipeline | `CloudAdapter` + `IMiddleware` | `TeamsExtensionMiddleware` is an Agent SDK `IMiddleware` that intercepts activities before they reach `MyAgent`. |
 | HTTP endpoint | `MapAgentApplicationEndpoints` (`/api/messages`) | Both SDKs share a single endpoint. The CloudAdapter receives all traffic; the middleware decides which SDK handles it. |
-| Activity Protocol parsing | `CloudAdapter.ProcessAsync` | Deserializes the HTTP body into an `IActivity`, validates the protocol envelope, and extracts `ClaimsIdentity` — all before the Teams SDK sees the activity. |
+| Activity Protocol parsing | `CloudAdapter.ProcessAsync` | Deserializes the HTTP body into an `IActivity`, validates the protocol envelope, and extracts `ClaimsIdentity` — all before the Teams Extension sees the activity. |
 | Bot identity | Shared bot registration (same ClientId) | Both SDKs operate under one Azure bot registration. No separate app registrations. |
-| Async task queuing | `IActivityTaskQueue` / `HostedActivityService` | CloudAdapter queues activities for background processing (Normal delivery mode). The Teams SDK benefits from this without any extra setup. |
-| Health-check endpoint | `MapAgentRootEndpoint` (`GET /`) | Returns assembly name and version — available to both SDKs. |
 
-### Teams SDK uses its own
+### Teams Extension uses its own
 
-| Capability | Teams SDK component | Notes |
+| Capability | Teams Extension component | Notes |
 |---|---|---|
 | Routing & handler registration | `TeamsBotApplication.OnMessage()`, `OnMembersAdded()`, etc. | Fluent handler registration with typed contexts — independent of Agent SDK's `OnActivity()` routes. |
-| Turn context | `TeamsBotApplication` context (via `ApiClient`) | The Teams SDK manages its own request-scoped context, separate from Agent SDK's `ITurnContext`. |
-| Activity model | `CoreActivity` (`Microsoft.Teams.Core.Schema`) | The Teams SDK has its own activity type hierarchy with polymorphic deserialization. The middleware bridges between the two models via JSON serialization. |
+| Turn context | `TeamsBotApplication` context (via `ApiClient`) | The Teams Extension manages its own request-scoped context, separate from Agent SDK's `ITurnContext`. |
+| Activity model | `CoreActivity` (`Microsoft.Teams.Core.Schema`) | The Teams Extension has its own activity type hierarchy with polymorphic deserialization. The middleware bridges between the two models via JSON serialization. |
 | Conversation client | `ConversationClient` (`Microsoft.Teams.Core`) | Sends, updates, and deletes activities. Uses the shared `HttpClient` (with `AgentSdkAuthHandler`) for outbound auth. |
 | User token client | `UserTokenClient` (`Microsoft.Teams.Core`) | Manages OAuth user tokens (sign-in, sign-out, token exchange). |
 | API client facade | `ApiClient` (`Microsoft.Teams.Apps.Api.Clients`) | Top-level facade exposing `Conversations`, `Users`, `Teams`, `Meetings` sub-clients. |
-| State management | Teams SDK internal state | The Teams SDK does not use Agent SDK's `IStorage` / `ITurnState`. Each SDK manages its own state independently. |
+| State management | Teams Extension internal state | The Teams Extension does not use Agent SDK's `IStorage` / `ITurnState`. Each SDK manages its own state independently. |
 
 ## Shared authentication
 
@@ -107,7 +105,7 @@ The `AgentSdkAuthHandler` uses `IConnections.GetTokenProvider()` to find the rig
 The `CloudAdapter` constructor accepts an optional `IMiddleware[]` parameter. .NET's built-in DI container does not auto-resolve array types from individually registered services, so `Program.cs` explicitly registers the array:
 
 ```csharp
-builder.Services.AddSingleton<IMiddleware, TeamsRouterMiddleware>();
+builder.Services.AddSingleton<IMiddleware, TeamsExtensionMiddleware>();
 builder.Services.AddSingleton<IMiddleware[]>(sp =>
     sp.GetServices<IMiddleware>().ToArray());
 ```

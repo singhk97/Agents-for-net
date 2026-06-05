@@ -13,7 +13,7 @@ namespace TeamsMiddlewareSample;
 
 /// <summary>
 /// Teams SDK echo bot.  Handles messages arriving from the msteams channel
-/// after <see cref="TeamsRouterMiddleware"/> routes them here.
+/// after <see cref="TeamsExtensionMiddleware"/> routes them here.
 /// </summary>
 public class MyTeamsBot : TeamsBotApplication
 {
