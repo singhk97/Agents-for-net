@@ -36,7 +36,8 @@ public class TeamsExtensionMiddleware : IMiddleware
 
     public async Task OnTurnAsync(ITurnContext turnContext, NextDelegate next, CancellationToken cancellationToken = default)
     {
-        if (turnContext.Activity.ChannelId == Channels.Msteams)
+        if (turnContext.Activity.ChannelId == Channels.Msteams
+            && !string.Equals(turnContext.Activity.Text?.Trim(), "agents", System.StringComparison.OrdinalIgnoreCase))
         {
             _logger.LogDebug("TeamsExtensionMiddleware: routing msteams activity {ActivityId} to Teams SDK", turnContext.Activity.Id);
 
