@@ -1,52 +1,42 @@
-# TeamsMiddlewareSample
+# TeamsExtensionMiddleware Sample
 
-This sample demonstrates how the **Microsoft Teams SDK** and the **Microsoft Agents SDK** can coexist in a single ASP.NET Core application, sharing a single bot registration and authentication configuration.
+An echo bot that runs both the **Microsoft Teams SDK** and the **Microsoft Agents SDK** side-by-side in a single ASP.NET Core app. A user sends "Hi" in Teams and gets back `[Teams SDK] You said: Hi`.
 
 ## Architecture
 
-Both SDKs receive traffic through the same `/api/messages` endpoint. An Agent SDK middleware inspects each incoming activity and routes it to the appropriate SDK based on `channelId`.
-
 ```
-                         ┌──────────────────────┐
-   Teams / Bot Service   │  POST /api/messages   │
-   ─────────────────────>│  (CloudAdapter)       │
-                         └──────────┬───────────┘
-                                    │
-                         ┌──────────▼───────────┐
-                         │TeamsExtensionMiddleware│
-                         │ (IMiddleware)         │
-                         └──────────┬───────────┘
-                                    │
-                    ┌───────────────┴───────────────┐
-                    │                               │
-            channelId == "msteams"          all other channels
-                    │                               │
-         ┌──────────▼──────────┐         ┌──────────▼──────────┐
-         │  MyTeamsBot         │         │  MyAgent             │
-         │  (Teams SDK)        │         │  (Agent SDK)         │
-         └──────────┬──────────┘         └──────────┬──────────┘
-                    │                               │
-         ┌──────────▼──────────┐         ┌──────────▼──────────┐
-         │  ConversationClient │         │  CloudAdapter        │
-         │  + AgentSdkAuth-    │         │  (built-in outbound  │
-         │    Handler          │         │   auth)              │
-         └─────────────────────┘         └─────────────────────┘
-                    │                               │
-                    └───────────┬───────────────────┘
-                                │
-                    ┌───────────▼───────────┐
-                    │  Agent SDK IConnections│
-                    │  (shared auth config) │
-                    └───────────────────────┘
+  User sends "Hi" in Teams
+          │
+          ▼
+  ┌───────────────┐
+  │ CloudAdapter   │  Authenticates the request, parses the Activity
+  │ /api/messages  │
+  └───────┬───────┘
+          │
+          ▼
+  ┌───────────────────────┐
+  │TeamsExtensionMiddleware│  channelId == "msteams"? ──yes──┐
+  └───────┬───────────────┘                                  │
+          │ no                                               │
+          ▼                                                  ▼
+  ┌───────────────┐                              ┌───────────────────┐
+  │   MyAgent      │                              │    MyTeamsBot      │
+  │ (Agent SDK)    │                              │   (Teams SDK)      │
+  │ "[Agent SDK]   │                              │ "[Teams SDK]       │
+  │  You said: Hi" │                              │  You said: Hi"     │
+  └───────────────┘                              └─────────┬─────────┘
+                                                           │
+                                                           ▼
+                                                 ┌───────────────────┐
+                                                 │ConversationClient  │
+                                                 │+ AgentSdkAuthHandler│  Acquires token from
+                                                 └─────────┬─────────┘  Agent SDK IConnections
+                                                           │
+                                                           ▼
+                                                   Reply sent to Teams
 ```
 
-### Request flow
-
-1. **Inbound**: The Bot Framework Service (or Teams) sends an activity to `POST /api/messages`. The Agent SDK's `CloudAdapter` authenticates the JWT token using the `TokenValidation` config, then runs the middleware pipeline.
-
-2. **Routing**: `TeamsExtensionMiddleware` checks `channelId`. If it is `msteams`, the activity is serialized to JSON and deserialized into the Teams SDK's `CoreActivity` model (both SDKs implement the same Activity Protocol wire format, so the conversion is lossless). The middleware then invokes `MyTeamsBot.OnActivity` and short-circuits the pipeline. For all other channels, `next()` is called and the activity reaches `MyAgent`.
-
-3. **Outbound**: When the Teams SDK's `ConversationClient` makes outbound HTTP calls (e.g., sending a reply), the `AgentSdkAuthHandler` intercepts the request, acquires a Bearer token from the Agent SDK's `IConnections`, and sets the `Authorization` header. This means a single `Connections` / `ConnectionsMap` config drives auth for both SDKs.
+Both SDKs share a single `/api/messages` endpoint, a single bot registration, and a single set of credentials (`Connections` in `appsettings.json`). The `TeamsExtensionMiddleware` routes `msteams` traffic to the Teams SDK; everything else falls through to the Agent SDK.
 
 ## What comes from where
 
