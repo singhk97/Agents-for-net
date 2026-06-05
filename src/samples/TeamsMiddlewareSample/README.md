@@ -48,17 +48,6 @@ Both SDKs receive traffic through the same `/api/messages` endpoint. An Agent SD
 
 3. **Outbound**: When the Teams SDK's `ConversationClient` makes outbound HTTP calls (e.g., sending a reply), the `AgentSdkAuthHandler` intercepts the request, acquires a Bearer token from the Agent SDK's `IConnections`, and sets the `Authorization` header. This means a single `Connections` / `ConnectionsMap` config drives auth for both SDKs.
 
-## Key files
-
-| File | Purpose |
-|---|---|
-| `Program.cs` | DI registration and app startup. Registers both SDKs and the routing middleware. |
-| `TeamsSdkExtensions.cs` | `AddTeamsSdkWithAgentAuth<T>()` extension method that registers the Teams SDK service chain (`ConversationClient`, `UserTokenClient`, `ApiClient`, `T`) using a named `HttpClient` with `AgentSdkAuthHandler`. |
-| `AgentSdkAuthHandler.cs` | `DelegatingHandler` that bridges Agent SDK auth (`IConnections` / `IAccessTokenProvider`) into the Teams SDK's outbound HTTP pipeline. |
-| `TeamsExtensionMiddleware.cs` | Agent SDK `IMiddleware` that inspects `channelId` and routes `msteams` traffic to the Teams Extension. |
-| `MyTeamsBot.cs` | Teams SDK bot (`TeamsBotApplication` subclass) with echo and welcome handlers. |
-| `MyAgent.cs` | Agent SDK bot (`AgentApplication` subclass) with echo and welcome handlers. |
-
 ## What comes from where
 
 The Teams Extension plugs into the Agent SDK's hosting and auth infrastructure while keeping its own application-layer types.
@@ -85,30 +74,27 @@ The Teams Extension plugs into the Agent SDK's hosting and auth infrastructure w
 | Conversation client | `ConversationClient` (`Microsoft.Teams.Core`) | Sends, updates, and deletes activities. Uses the shared `HttpClient` (with `AgentSdkAuthHandler`) for outbound auth. |
 | User token client | `UserTokenClient` (`Microsoft.Teams.Core`) | Manages OAuth user tokens (sign-in, sign-out, token exchange). |
 | API client facade | `ApiClient` (`Microsoft.Teams.Apps.Api.Clients`) | Top-level facade exposing `Conversations`, `Users`, `Teams`, `Meetings` sub-clients. |
-| State management | Teams Extension internal state | The Teams Extension does not use Agent SDK's `IStorage` / `ITurnState`. Each SDK manages its own state independently. |
 
-## Shared authentication
+#### Why the Teams Extension owns these layers
 
-Instead of configuring a separate `AzureAd` section for the Teams SDK, this sample reuses the Agent SDK's existing auth:
+These components are where Teams-specific features live. Keeping them in the Teams Extension allows the Teams platform to evolve independently of the Agent SDK:
 
-```
-appsettings.json
-├── TokenValidation      → Validates inbound JWT tokens (used by CloudAdapter)
-├── Connections           → Defines named auth connections (ClientId, Secret, Scopes)
-└── ConnectionsMap        → Maps service URLs to connections (wildcard "*" matches all)
-```
+- **Routing & handler registration** — When Teams introduces a new activity type (e.g., suggested actions, adaptive card universal actions), the Teams Extension adds a new handler method without waiting for the Agent SDK to update its generic routing. Developers get `OnSuggestedAction()` instead of manually filtering `OnActivity()`.
+- **Activity model** — Teams-specific payloads like targeted messaging, meeting events, or message extension responses require first-class schema types. `CoreActivity` and its subtypes model these natively with polymorphic deserialization, rather than relying on untyped `ChannelData` dictionaries.
+- **Conversation & User Token clients** — When a feature like targeted messaging adds new API endpoints or parameters, the `ConversationClient` is updated to expose them as typed methods. The Teams Extension ships the client update alongside the feature, keeping the two in sync.
+- **Turn context** — The Teams Extension's context is scoped to Teams capabilities: it knows about the current team, channel, meeting, and user identity. This richer context enables features like proactive messaging to specific users in a channel without manual plumbing.
+- **API client facade** — `ApiClient` surfaces `Conversations`, `Users`, `Teams`, and `Meetings` as dedicated sub-clients. This provides a rich, discoverable development experience where Teams-specific operations are organized by domain rather than flattened into a single generic client.
 
-The `AgentSdkAuthHandler` uses `IConnections.GetTokenProvider()` to find the right connection for each outbound request, then calls `IAccessTokenProvider.GetAccessTokenAsync()` to get a token. This eliminates duplicate credential configuration.
+### Key files
 
-## IMiddleware[] registration
-
-The `CloudAdapter` constructor accepts an optional `IMiddleware[]` parameter. .NET's built-in DI container does not auto-resolve array types from individually registered services, so `Program.cs` explicitly registers the array:
-
-```csharp
-builder.Services.AddSingleton<IMiddleware, TeamsExtensionMiddleware>();
-builder.Services.AddSingleton<IMiddleware[]>(sp =>
-    sp.GetServices<IMiddleware>().ToArray());
-```
+| File | Purpose |
+|---|---|
+| `Program.cs` | DI registration and app startup. Registers both SDKs and the routing middleware. |
+| `TeamsSdkExtensions.cs` | `AddTeamsSdkWithAgentAuth<T>()` extension method that registers the Teams Extension service chain (`ConversationClient`, `UserTokenClient`, `ApiClient`, `T`) using a named `HttpClient` with `AgentSdkAuthHandler`. |
+| `AgentSdkAuthHandler.cs` | `DelegatingHandler` that bridges Agent SDK auth (`IConnections` / `IAccessTokenProvider`) into the Teams Extension's outbound HTTP pipeline. |
+| `TeamsExtensionMiddleware.cs` | Agent SDK `IMiddleware` that inspects `channelId` and routes `msteams` traffic to the Teams Extension. |
+| `MyTeamsBot.cs` | Teams Extension bot (`TeamsBotApplication` subclass) with echo and welcome handlers. |
+| `MyAgent.cs` | Agent SDK bot (`AgentApplication` subclass) with echo and welcome handlers. |
 
 ## Running locally
 
