@@ -9,6 +9,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Teams.Apps;
 using Microsoft.Teams.Apps.Api.Clients;
 using Microsoft.Teams.Apps.Handlers;
+using Microsoft.Teams.Apps.Handlers.MessageExtension;
 using Microsoft.Teams.Apps.Handlers.TaskModules;
 using Microsoft.Teams.Apps.Schema;
 using Microsoft.Teams.Apps.Schema.Entities;
@@ -60,7 +61,9 @@ public class MyTeamsBot : TeamsBotApplication
                                 { "title": "quote", "value": "Bot quotes its own message" },
                                 { "title": "proactive", "value": "Delayed proactive message" },
                                 { "title": "task", "value": "Task module fetch/submit flow" },
-                                { "title": "turn context", "value": "Use Agent SDK ITurnContext from Teams SDK handler" }
+                                { "title": "turn context", "value": "Use Agent SDK ITurnContext from Teams SDK handler" },
+                                { "title": "(search box)", "value": "Message extension query — search from compose box" },
+                                { "title": "(action cmd)", "value": "Message extension action — form via task module" }
                             ]
                         },
                         {
@@ -359,6 +362,132 @@ public class MyTeamsBot : TeamsBotApplication
             return TaskModuleResponse.CreateBuilder()
                 .WithType(TaskModuleResponseType.Message)
                 .WithMessage("Task module completed successfully!")
+                .Build();
+        });
+
+        // ── Message Extension: query ───────────────────────────────────
+        this.OnQuery(async (context, ct) =>
+        {
+            var query = context.Activity.Value;
+            string searchText = query?.Parameters?.FirstOrDefault()?.Value ?? "";
+
+            // initialRun sends "true" as the parameter value — treat as empty
+            if (string.Equals(searchText, "true", StringComparison.OrdinalIgnoreCase))
+                searchText = "";
+
+            _logger.LogInformation("Message extension query: CommandId={CommandId}, Search={Search}",
+                query?.CommandId, searchText);
+
+            // Return sample results as hero cards
+            string[] items = ["Alpha", "Beta", "Gamma", "Delta", "Epsilon"];
+            var results = items
+                .Where(i => string.IsNullOrEmpty(searchText) || i.Contains(searchText, StringComparison.OrdinalIgnoreCase))
+                .Select(item => TeamsAttachment.CreateBuilder()
+                    .WithContentType(AttachmentContentType.HeroCard)
+                    .WithContent(new
+                    {
+                        title = item,
+                        subtitle = string.IsNullOrEmpty(searchText) ? "All results" : $"Match for '{searchText}'",
+                        text = $"This is a demo search result: {item}"
+                    })
+                    .Build())
+                .ToArray();
+
+            if (results.Length == 0)
+            {
+                return MessageExtensionResponse.CreateBuilder()
+                    .WithType(MessageExtensionResponseType.Message)
+                    .WithText($"No results found for '{searchText}'")
+                    .Build();
+            }
+
+            return MessageExtensionResponse.CreateBuilder()
+                .WithType(MessageExtensionResponseType.Result)
+                .WithAttachmentLayout(TeamsAttachmentLayout.List)
+                .WithAttachments(results)
+                .Build();
+        });
+
+        // ── Message Extension: action (fetch task) ────────────────────
+        this.OnFetchTask(async (context, ct) =>
+        {
+            var action = context.Activity.Value;
+            _logger.LogInformation("Message extension fetch task: CommandId={CommandId}", action?.CommandId);
+
+            var formCard = JsonDocument.Parse("""
+                {
+                    "type": "AdaptiveCard",
+                    "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                    "version": "1.5",
+                    "body": [
+                        {
+                            "type": "TextBlock",
+                            "text": "Message Extension Action",
+                            "weight": "Bolder",
+                            "size": "Medium"
+                        },
+                        {
+                            "type": "Input.Text",
+                            "id": "title",
+                            "placeholder": "Enter a title",
+                            "label": "Title"
+                        },
+                        {
+                            "type": "Input.Text",
+                            "id": "description",
+                            "placeholder": "Enter a description",
+                            "label": "Description",
+                            "isMultiline": true
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "type": "Action.Submit",
+                            "title": "Submit"
+                        }
+                    ]
+                }
+                """).RootElement;
+
+            var attachment = TeamsAttachment.CreateBuilder()
+                .WithAdaptiveCard(formCard)
+                .Build();
+
+            return MessageExtensionActionResponse.CreateBuilder()
+                .WithTask(
+                    TaskModuleResponse.CreateBuilder()
+                        .WithType(TaskModuleResponseType.Continue)
+                        .WithTitle("Create Item")
+                        .WithCard(attachment)
+                        .WithHeight(TaskModuleSize.Medium)
+                        .WithWidth(TaskModuleSize.Medium))
+                .Build();
+        });
+
+        // ── Message Extension: action (submit) ───────────────────────
+        this.OnSubmitAction(async (context, ct) =>
+        {
+            var action = context.Activity.Value;
+            _logger.LogInformation("Message extension submit action: CommandId={CommandId}, Data={Data}",
+                action?.CommandId, action?.Data);
+
+            // Return a result card that gets inserted into the compose box
+            var resultCard = TeamsAttachment.CreateBuilder()
+                .WithContentType(AttachmentContentType.HeroCard)
+                .WithContent(new
+                {
+                    title = "Item Created",
+                    subtitle = "Via message extension action",
+                    text = $"Data: {action?.Data}"
+                })
+                .Build();
+
+            return MessageExtensionActionResponse.CreateBuilder()
+                .WithComposeExtension(
+                    MessageExtensionResponse.CreateBuilder()
+                        .WithType(MessageExtensionResponseType.Result)
+                        .WithAttachmentLayout(TeamsAttachmentLayout.List)
+                        .WithAttachments(resultCard))
                 .Build();
         });
 
