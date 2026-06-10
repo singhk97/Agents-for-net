@@ -5,10 +5,13 @@ using Microsoft.Agents.Builder;
 using Microsoft.Agents.Core.Models;
 using Microsoft.Agents.Core.Serialization;
 using Microsoft.Extensions.Logging;
+using Microsoft.Teams.Apps.Schema;
 using Microsoft.Teams.Core.Schema;
 using System;
 using System.Threading;
 using System.Threading.Tasks;
+using IMiddleware = Microsoft.Agents.Builder.IMiddleware;
+using TeamsInvokeResponse = Microsoft.Teams.Apps.Handlers.InvokeResponse;
 
 namespace TeamsMiddlewareSample;
 
@@ -25,6 +28,15 @@ namespace TeamsMiddlewareSample;
 /// </remarks>
 public class TeamsExtensionMiddleware : IMiddleware
 {
+    /// <summary>
+    /// The Agent SDK <see cref="ITurnContext"/> for the current turn.
+    /// Uses <see cref="AsyncLocal{T}"/> so it flows within the same async context
+    /// regardless of which thread the turn executes on (non-invoke activities are
+    /// processed on a background thread where HttpContext is unavailable).
+    /// </summary>
+    public static ITurnContext? CurrentTurnContext => _currentTurnContext.Value;
+    private static readonly AsyncLocal<ITurnContext?> _currentTurnContext = new();
+
     private readonly MyTeamsBot _teamsBot;
     private readonly ILogger<TeamsExtensionMiddleware> _logger;
 
@@ -36,31 +48,68 @@ public class TeamsExtensionMiddleware : IMiddleware
 
     public async Task OnTurnAsync(ITurnContext turnContext, NextDelegate next, CancellationToken cancellationToken = default)
     {
-        if (turnContext.Activity.ChannelId == Channels.Msteams
-            && !string.Equals(turnContext.Activity.Text?.Trim(), "agents", System.StringComparison.OrdinalIgnoreCase))
+        if (turnContext.Activity.ChannelId == Channels.Msteams)
         {
-            _logger.LogDebug("TeamsExtensionMiddleware: routing msteams activity {ActivityId} to Teams SDK", turnContext.Activity.Id);
-
             // Bridge: serialize the Agent SDK IActivity to JSON, then deserialize
             // into the Teams SDK activity model.  Both SDKs implement the same
             // Activity Protocol wire format, so the conversion is lossless.
             string activityJson = ProtocolJsonSerializer.ToJson(turnContext.Activity);
-            CoreActivity coreActivity = CoreActivity.FromJsonString(activityJson);
 
-            // Invoke the Teams SDK's OnActivity handler directly.
-            // The Teams SDK's BotApplication.SendActivityAsync uses its own
-            // ConversationClient to send responses — it does not need the Agent
-            // SDK's ITurnContext.SendActivityAsync.
-            if (_teamsBot.OnActivity != null)
+            // HasMatchingRoute calls TeamsActivity.FromActivity which mutates the
+            // CoreActivity (Extract removes entries from Properties). Deserialize a
+            // separate copy for the match check so the real activity stays intact.
+            CoreActivity routeCheckActivity = CoreActivity.FromJsonString(activityJson);
+
+            // Only route to Teams SDK if a registered handler matches this activity.
+            // Unmatched activities fall through to the Agent SDK pipeline.
+            if (_teamsBot.HasMatchingRoute(routeCheckActivity))
             {
-                await _teamsBot.OnActivity(coreActivity, cancellationToken);
+                _logger.LogDebug("TeamsExtensionMiddleware: routing msteams activity {ActivityId} to Teams SDK", turnContext.Activity.Id);
+
+                // Deserialize a fresh CoreActivity for the handler (the routeCheckActivity
+                // was mutated by HasMatchingRoute's Extract calls).
+                CoreActivity coreActivity = CoreActivity.FromJsonString(activityJson);
+
+                // Make the Agent SDK turn context available to Teams SDK handlers.
+                // Non-invoke activities are processed on a background thread where
+                // HttpContext is unavailable, so we use an AsyncLocal that flows
+                // within the same async context regardless of thread.  Handlers
+                // access it via TeamsExtensionMiddleware.CurrentTurnContext.
+                _currentTurnContext.Value = turnContext;
+
+                if (turnContext.Activity.Type == ActivityTypes.Invoke)
+                {
+                    // Invoke activities require special handling: Teams SDK returns an
+                    // InvokeResponse that must be bridged into Agent SDK's StackState
+                    // so that ProcessTurnResults can write the correct HTTP response.
+                    // Using ProcessInvokeAsync avoids the double-write conflict that
+                    // occurs when OnActivity writes directly to HttpContext.Response.
+                    TeamsInvokeResponse invokeResponse = await _teamsBot.ProcessInvokeAsync(coreActivity, cancellationToken);
+
+                    if (invokeResponse is not null)
+                    {
+                        var responseActivity = Activity.CreateInvokeResponseActivity(invokeResponse.Body, invokeResponse.Status);
+                        await turnContext.SendActivityAsync((Activity)responseActivity, cancellationToken);
+                    }
+                }
+                else
+                {
+                    // Non-invoke activities: use the standard OnActivity delegate which
+                    // sends responses via ConversationClient.
+                    if (_teamsBot.OnActivity != null)
+                    {
+                        await _teamsBot.OnActivity(coreActivity, cancellationToken);
+                    }
+                }
+
+                // Short-circuit: do NOT call next() — Teams SDK handled this activity.
+                return;
             }
 
-            // Short-circuit: do NOT call next() — Teams SDK handled this activity.
-            return;
+            _logger.LogDebug("TeamsExtensionMiddleware: no matching Teams SDK route for activity {ActivityId}, falling through to Agent SDK", turnContext.Activity.Id);
         }
 
-        // Non-Teams channels continue to the Agent SDK pipeline.
+        // Non-Teams channels (or unmatched Teams activities) continue to the Agent SDK pipeline.
         await next(cancellationToken);
     }
 }

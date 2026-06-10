@@ -38,6 +38,27 @@ An echo bot that runs both the **Microsoft Teams SDK** and the **Microsoft Agent
 
 Both SDKs share a single `/api/messages` endpoint, a single bot registration, and a single set of credentials (`Connections` in `appsettings.json`). The `TeamsExtensionMiddleware` routes `msteams` traffic to the Teams SDK; everything else falls through to the Agent SDK.
 
+### Accessing the Agent SDK turn context from Teams handlers
+
+The `TeamsExtensionMiddleware` makes the Agent SDK's `ITurnContext` available to Teams SDK handlers via `Context<TActivity>.Properties`:
+
+```csharp
+this.OnMessage(async (teamsContext, cancellationToken) =>
+{
+    // Retrieve the Agent SDK turn context
+    teamsContext.Properties.TryGetValue(TeamsExtensionMiddleware.TurnContextKey, out object? obj);
+    var agentTurnContext = obj as ITurnContext;
+
+    // Use Agent SDK capabilities (state, services, send via Agent pipeline, etc.)
+    if (agentTurnContext is not null)
+    {
+        var myService = agentTurnContext.Services.Get<IMyService>();
+    }
+});
+```
+
+**How it works:** The middleware stashes the `ITurnContext` in `HttpContext.Items` under a well-known key. `TeamsBotApplication` copies string-keyed `HttpContext.Items` entries into `Context.Properties` when creating the turn context. This passes the live object through the same HTTP request without coupling either SDK to the other's types.
+
 ## What comes from where
 
 The Teams Extension plugs into the Agent SDK's hosting and auth infrastructure while keeping its own application-layer types.
